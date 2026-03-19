@@ -1,0 +1,8 @@
+oginUser(phone)
+registerUser(data)
+verifyDevice()
+verifyPIN(pin)
+verifyVoice(audio)
+parseCommand(text)
+transferBalance(amount, receiver)
+speak(text)

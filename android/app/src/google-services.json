@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "747025121874",
+    "project_id": "voice-payment-app-6f046",
+    "storage_bucket": "voice-payment-app-6f046.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:747025121874:android:7fa4f68ffd41324961558b",
+        "android_client_info": {
+          "package_name": "com.example.voice_payment_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCkXHM5BvCwuhjt490PwZdJCbPq6WHJYRI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

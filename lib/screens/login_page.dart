@@ -3,8 +3,14 @@ import 'package:flutter_sound/flutter_sound.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+
+import '../models/user_model.dart';
+import '../services/firestore_service.dart';
 import 'dashboard_page.dart';
+
 class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
   @override
   _LoginPageState createState() => _LoginPageState();
 }
@@ -15,6 +21,8 @@ class _LoginPageState extends State<LoginPage> {
 
   FlutterSoundRecorder recorder = FlutterSoundRecorder();
   FlutterSoundPlayer player = FlutterSoundPlayer();
+
+  final FirestoreService firestoreService = FirestoreService();
 
   bool isRecording = false;
   bool hasRecorded = false;
@@ -93,10 +101,89 @@ class _LoginPageState extends State<LoginPage> {
     });
   }
 
+  Future<void> _submitUser() async {
+    String name = nameController.text.trim();
+    String pin = pinController.text.trim();
+
+    if (name.isEmpty || pin.isEmpty) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("Missing Details"),
+          content: const Text("Please enter Username and PIN"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("OK"),
+            )
+          ],
+        ),
+      );
+      return;
+    }
+
+    if (!hasRecorded) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("Voice Sample Missing"),
+          content: const Text("Please record voice sample"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("OK"),
+            )
+          ],
+        ),
+      );
+      return;
+    }
+
+    try {
+      final userId = name.toLowerCase().replaceAll(' ', '_');
+
+      final user = UserModel(
+        userId: userId,
+        name: name,
+        pin: pin,
+        deviceId: 'test_device_001',
+        voiceFeatureMatrix: [0.12, 0.45, 0.78, 0.23],
+        balance: 5000,
+      );
+
+      await firestoreService.registerUser(user);
+
+      final loggedInUser = await firestoreService.loginUser(name, pin);
+
+      if (loggedInUser == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Login failed")),
+        );
+        return;
+      }
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DashboardPage(
+            userName: loggedInUser.name,
+            userId: loggedInUser.userId,
+          ),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error: $e")),
+      );
+    }
+  }
+
   @override
   void dispose() {
     recorder.closeRecorder();
     player.closePlayer();
+    nameController.dispose();
+    pinController.dispose();
     super.dispose();
   }
 
@@ -104,7 +191,7 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("🎙️ VoicePay"),
+        title: const Text("🎙️ VoicePay"),
         centerTitle: true,
       ),
       body: Padding(
@@ -112,36 +199,33 @@ class _LoginPageState extends State<LoginPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Username
             TextField(
               controller: nameController,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: "Username",
                 border: OutlineInputBorder(),
               ),
             ),
-            SizedBox(height: 20),
+            const SizedBox(height: 20),
 
-            // PIN
             TextField(
               controller: pinController,
               keyboardType: TextInputType.number,
               obscureText: true,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: "PIN Number",
                 border: OutlineInputBorder(),
               ),
             ),
-            SizedBox(height: 25),
+            const SizedBox(height: 25),
 
-            // RECORD BUTTON
             ElevatedButton.icon(
               icon: Icon(isRecording ? Icons.stop : Icons.mic),
               label: Text(isRecording
                   ? "Stop Recording"
                   : "Record Voice Sample"),
               style: ElevatedButton.styleFrom(
-                padding: EdgeInsets.symmetric(horizontal: 25, vertical: 15),
+                padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 15),
               ),
               onPressed: () {
                 if (isRecording) {
@@ -151,12 +235,11 @@ class _LoginPageState extends State<LoginPage> {
                 }
               },
             ),
-            SizedBox(height: 20),
+            const SizedBox(height: 20),
 
-            // VOICE PREVIEW LIKE WHATSAPP
             if (hasRecorded)
               Container(
-                padding: EdgeInsets.all(10),
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: Colors.grey.shade200,
                   borderRadius: BorderRadius.circular(15),
@@ -173,71 +256,43 @@ class _LoginPageState extends State<LoginPage> {
                         color: Colors.green,
                       ),
                     ),
-                    SizedBox(width: 10),
-                    Text("Voice Sample"),
+                    const SizedBox(width: 10),
+                    const Text("Voice Sample"),
                   ],
                 ),
               ),
 
-            SizedBox(height: 30),
+            const SizedBox(height: 30),
 
-            // RESET & SUBMIT BUTTONS SIDE BY SIDE
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 ElevatedButton(
                   onPressed: _resetAll,
                   style: ElevatedButton.styleFrom(
-                      padding:
-                      EdgeInsets.symmetric(horizontal: 30, vertical: 15),
-                      backgroundColor: Colors.blue),
-                  child: Text(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 30, vertical: 15),
+                    backgroundColor: Colors.blue,
+                  ),
+                  child: const Text(
                     "Reset",
                     style: TextStyle(
-                      color: Colors.white, // <-- change text color here
+                      color: Colors.white,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
                 ),
                 ElevatedButton(
-                  onPressed: () {
-                    String name = nameController.text.trim();
-                    String pin = pinController.text.trim();
-
-                    // ❌ if fields empty -> show alert
-                    if (name.isEmpty || pin.isEmpty) {
-                      showDialog(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: Text("Missing Details"),
-                          content: Text("Please enter Username and PIN"),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: Text("OK"),
-                            )
-                          ],
-                        ),
-                      );
-                      return;
-                    }
-
-                    // ✅ if filled -> go to next page
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => DashboardPage(userName: name),
-                      ),
-                    );
-                  },
+                  onPressed: _submitUser,
                   style: ElevatedButton.styleFrom(
-                      padding:
-                      EdgeInsets.symmetric(horizontal: 30, vertical: 15),
-                      backgroundColor: Colors.blue),
-                  child: Text(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 30, vertical: 15),
+                    backgroundColor: Colors.blue,
+                  ),
+                  child: const Text(
                     "Submit",
                     style: TextStyle(
-                      color: Colors.white, // <-- change text color here
+                      color: Colors.white,
                       fontWeight: FontWeight.bold,
                     ),
                   ),

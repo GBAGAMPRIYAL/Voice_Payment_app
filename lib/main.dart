@@ -17,7 +17,7 @@ class VoicePayApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'VoicePay',
       theme: ThemeData(primarySwatch: Colors.deepPurple),
-      home:  LoginPage(),
+      home: LoginPage(),
     );
   }
 }

@@ -1,35 +1,75 @@
 import 'package:flutter/material.dart';
+import '../services/firestore_service.dart';
 
 class TransactionsPage extends StatefulWidget {
-  const TransactionsPage({super.key});
+  final String userId;
+
+  const TransactionsPage({super.key, required this.userId});
 
   @override
   State<TransactionsPage> createState() => _TransactionsPageState();
 }
 
 class _TransactionsPageState extends State<TransactionsPage> {
-
   final receiverController = TextEditingController();
   final amountController = TextEditingController();
   final pinController = TextEditingController();
 
   bool confirmAmount = false;
 
-  void submitTransaction() {
+  final FirestoreService firestoreService = FirestoreService();
+
+  Future<void> submitTransaction() async {
     if (receiverController.text.isEmpty ||
         amountController.text.isEmpty ||
         pinController.text.isEmpty ||
         confirmAmount == false) {
-
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please fill all fields and confirm amount")),
       );
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Transaction Successful 💸")),
+    final amount = int.tryParse(amountController.text.trim());
+    if (amount == null || amount <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Enter a valid amount")),
+      );
+      return;
+    }
+
+    final success = await firestoreService.submitTransaction(
+      userId: widget.userId,
+      receiverName: receiverController.text.trim(),
+      amount: amount,
+      pin: pinController.text.trim(),
     );
+
+    if (success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Transaction Successful 💸")),
+      );
+
+      receiverController.clear();
+      amountController.clear();
+      pinController.clear();
+
+      setState(() {
+        confirmAmount = false;
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Transaction failed: wrong PIN or insufficient balance")),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    receiverController.dispose();
+    amountController.dispose();
+    pinController.dispose();
+    super.dispose();
   }
 
   @override
@@ -39,17 +79,14 @@ class _TransactionsPageState extends State<TransactionsPage> {
         title: const Text("Transactions"),
         centerTitle: true,
       ),
-
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(25),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-
               const SizedBox(height: 10),
 
-              // RECEIVER NAME
               TextField(
                 controller: receiverController,
                 style: const TextStyle(fontSize: 22),
@@ -66,7 +103,6 @@ class _TransactionsPageState extends State<TransactionsPage> {
 
               const SizedBox(height: 25),
 
-              // AMOUNT
               TextField(
                 controller: amountController,
                 keyboardType: TextInputType.number,
@@ -84,7 +120,6 @@ class _TransactionsPageState extends State<TransactionsPage> {
 
               const SizedBox(height: 20),
 
-              // BIG CHECKBOX
               Row(
                 children: [
                   Transform.scale(
@@ -108,7 +143,6 @@ class _TransactionsPageState extends State<TransactionsPage> {
 
               const SizedBox(height: 25),
 
-              // PIN FIELD
               TextField(
                 controller: pinController,
                 obscureText: true,
@@ -127,7 +161,6 @@ class _TransactionsPageState extends State<TransactionsPage> {
 
               const SizedBox(height: 35),
 
-              // SUBMIT BUTTON
               SizedBox(
                 height: 65,
                 child: ElevatedButton(

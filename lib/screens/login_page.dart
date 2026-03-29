@@ -127,9 +127,11 @@ class _LoginPageState extends State<LoginPage> {
               controller: pinController,
               keyboardType: TextInputType.number,
               obscureText: true,
+              maxLength: 4, // ⭐ limit to 6 digits
               decoration: InputDecoration(
-                labelText: "PIN Number",
+                labelText: "4 Digit PIN",
                 border: OutlineInputBorder(),
+                counterText: "", // hides 0/6 text
               ),
             ),
             SizedBox(height: 25),

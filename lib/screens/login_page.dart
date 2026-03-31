@@ -1,64 +1,92 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_sound/flutter_sound.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:path_provider/path_provider.dart';
-import 'dart:io';
 
+import '../controllers/login_voice_controller.dart';
 import '../models/user_model.dart';
 import '../services/firestore_service.dart';
+import '../services/stt_service.dart';
+import '../services/tts_service.dart';
+import '../services/voice_record_service.dart';
 import 'dashboard_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
   @override
-  _LoginPageState createState() => _LoginPageState();
+  State<LoginPage> createState() => _LoginPageState();
 }
 
 class _LoginPageState extends State<LoginPage> {
-  TextEditingController nameController = TextEditingController();
-  TextEditingController pinController = TextEditingController();
-
-  FlutterSoundRecorder recorder = FlutterSoundRecorder();
-  FlutterSoundPlayer player = FlutterSoundPlayer();
+  final TextEditingController nameController = TextEditingController();
+  final TextEditingController pinController = TextEditingController();
 
   final FirestoreService firestoreService = FirestoreService();
+  final VoiceRecordService voiceRecordService = VoiceRecordService();
+  late final LoginVoiceController loginVoiceController;
 
   bool isRecording = false;
   bool hasRecorded = false;
   bool isPlaying = false;
-  String? audioPath;
+  bool _voiceFlowStarted = false;
 
   @override
   void initState() {
     super.initState();
-    initRecorder();
+    loginVoiceController = LoginVoiceController(
+      ttsService: TtsService.instance,
+      sttService: SttService.instance,
+    );
+    _initializeVoiceModules();
   }
 
-  Future initRecorder() async {
-    await Permission.microphone.request();
-    await recorder.openRecorder();
-    await player.openPlayer();
+  Future<void> _initializeVoiceModules() async {
+    await voiceRecordService.init();
+    await TtsService.instance.init();
+    await SttService.instance.init();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || _voiceFlowStarted) return;
+      _voiceFlowStarted = true;
+      await loginVoiceController.startLoginFlow(
+        onNameCaptured: (value) async {
+          if (!mounted) return;
+          setState(() {
+            nameController.text = value;
+          });
+        },
+        onPinCaptured: (value) async {
+          if (!mounted) return;
+          setState(() {
+            pinController.text = value;
+          });
+        },
+        onAskVoiceSample: () async {
+          await TtsService.instance.speak(
+            'Now record your voice sample using the record button.',
+          );
+        },
+      );
+    });
   }
 
   Future<void> _startRecording() async {
-    var status = await Permission.microphone.request();
-    if (status != PermissionStatus.granted) {
-      print("Microphone permission not granted");
+    final started = await voiceRecordService.startRecording();
+    if (!started) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission not granted')),
+      );
       return;
     }
 
-    Directory tempDir = await getTemporaryDirectory();
-    audioPath = '${tempDir.path}/voice.aac';
-
-    await recorder.startRecorder(toFile: audioPath);
+    if (!mounted) return;
     setState(() {
       isRecording = true;
     });
   }
 
   Future<void> _stopRecording() async {
-    await recorder.stopRecorder();
+    await voiceRecordService.stopRecording();
+    if (!mounted) return;
     setState(() {
       isRecording = false;
       hasRecorded = true;
@@ -66,55 +94,59 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _playRecording() async {
-    if (audioPath != null && !isPlaying) {
-      await player.startPlayer(
-        fromURI: audioPath,
-        whenFinished: () {
-          setState(() {
-            isPlaying = false;
-          });
-        },
-      );
-      setState(() {
-        isPlaying = true;
-      });
-    } else if (isPlaying) {
-      await player.stopPlayer();
+    if (voiceRecordService.audioPath == null) return;
+
+    if (voiceRecordService.player.isPlaying) {
+      await voiceRecordService.player.stopPlayer();
+      if (!mounted) return;
       setState(() {
         isPlaying = false;
       });
+      return;
     }
+
+    await voiceRecordService.togglePlayback(
+      onPlaybackFinished: () {
+        if (!mounted) return;
+        setState(() {
+          isPlaying = false;
+        });
+      },
+    );
+
+    if (!mounted) return;
+    setState(() {
+      isPlaying = true;
+    });
   }
 
-  void _resetAll() {
+  Future<void> _resetAll() async {
     nameController.clear();
     pinController.clear();
-    if (isRecording) {
-      _stopRecording();
-    }
-    if (isPlaying) {
-      player.stopPlayer();
-    }
+    await voiceRecordService.reset();
+
+    if (!mounted) return;
     setState(() {
+      isRecording = false;
       hasRecorded = false;
-      audioPath = null;
+      isPlaying = false;
     });
   }
 
   Future<void> _submitUser() async {
-    String name = nameController.text.trim();
-    String pin = pinController.text.trim();
+    final String name = nameController.text.trim();
+    final String pin = pinController.text.trim();
 
     if (name.isEmpty || pin.isEmpty) {
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text("Missing Details"),
-          content: const Text("Please enter Username and PIN"),
+          title: const Text('Missing Details'),
+          content: const Text('Please enter Username and PIN'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text("OK"),
+              child: const Text('OK'),
             )
           ],
         ),
@@ -126,12 +158,12 @@ class _LoginPageState extends State<LoginPage> {
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text("Voice Sample Missing"),
-          content: const Text("Please record voice sample"),
+          title: const Text('Voice Sample Missing'),
+          content: const Text('Please record voice sample'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text("OK"),
+              child: const Text('OK'),
             )
           ],
         ),
@@ -152,16 +184,21 @@ class _LoginPageState extends State<LoginPage> {
       );
 
       await firestoreService.registerUser(user);
-
       final loggedInUser = await firestoreService.loginUser(name, pin);
 
       if (loggedInUser == null) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Login failed")),
+          const SnackBar(content: Text('Login failed')),
         );
+        await TtsService.instance.speak('Login failed. Please try again.');
         return;
       }
 
+      await TtsService.instance.stop();
+      await SttService.instance.stop();
+
+      if (!mounted) return;
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -172,18 +209,20 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
+        SnackBar(content: Text('Error: $e')),
       );
     }
   }
 
   @override
   void dispose() {
-    recorder.closeRecorder();
-    player.closePlayer();
     nameController.dispose();
     pinController.dispose();
+    voiceRecordService.dispose();
+    SttService.instance.stop();
+    TtsService.instance.stop();
     super.dispose();
   }
 
@@ -191,7 +230,7 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("🎙️ VoicePay"),
+        title: const Text('🎙️ VoicePay'),
         centerTitle: true,
       ),
       body: Padding(
@@ -202,41 +241,37 @@ class _LoginPageState extends State<LoginPage> {
             TextField(
               controller: nameController,
               decoration: const InputDecoration(
-                labelText: "Username",
+                labelText: 'Username',
                 border: OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 20),
-
             TextField(
               controller: pinController,
               keyboardType: TextInputType.number,
               obscureText: true,
               decoration: const InputDecoration(
-                labelText: "PIN Number",
+                labelText: 'PIN Number',
                 border: OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 25),
-
             ElevatedButton.icon(
               icon: Icon(isRecording ? Icons.stop : Icons.mic),
-              label: Text(isRecording
-                  ? "Stop Recording"
-                  : "Record Voice Sample"),
+              label: Text(isRecording ? 'Stop Recording' : 'Record Voice Sample'),
               style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 15),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 25, vertical: 15),
               ),
-              onPressed: () {
+              onPressed: () async {
                 if (isRecording) {
-                  _stopRecording();
+                  await _stopRecording();
                 } else {
-                  _startRecording();
+                  await _startRecording();
                 }
               },
             ),
             const SizedBox(height: 20),
-
             if (hasRecorded)
               Container(
                 padding: const EdgeInsets.all(10),
@@ -257,44 +292,40 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                     ),
                     const SizedBox(width: 10),
-                    const Text("Voice Sample"),
+                    const Text('Voice Sample'),
                   ],
                 ),
               ),
-
-            const SizedBox(height: 30),
-
+            const SizedBox(height: 25),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 ElevatedButton(
                   onPressed: _resetAll,
                   style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 30, vertical: 15),
-                    backgroundColor: Colors.blue,
+                      horizontal: 25,
+                      vertical: 15,
+                    ),
                   ),
                   child: const Text(
-                    "Reset",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    'Reset',
+                    style: TextStyle(color: Colors.white),
                   ),
                 ),
                 ElevatedButton(
                   onPressed: _submitUser,
                   style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.deepPurple,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 30, vertical: 15),
-                    backgroundColor: Colors.blue,
+                      horizontal: 25,
+                      vertical: 15,
+                    ),
                   ),
                   child: const Text(
-                    "Submit",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    'Submit',
+                    style: TextStyle(color: Colors.white),
                   ),
                 ),
               ],

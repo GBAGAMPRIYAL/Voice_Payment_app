@@ -1,5 +1,6 @@
-import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
+
 import 'screens/login_page.dart';
 
 void main() async {
@@ -17,7 +18,7 @@ class VoicePayApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'VoicePay',
       theme: ThemeData(primarySwatch: Colors.deepPurple),
-      home: LoginPage(),
+      home: const LoginPage(),
     );
   }
 }

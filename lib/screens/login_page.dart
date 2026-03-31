@@ -1,8 +1,12 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_sound/flutter_sound.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'dart:io';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../models/user_model.dart';
 import '../services/firestore_service.dart';
@@ -12,22 +16,27 @@ class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
   @override
-  _LoginPageState createState() => _LoginPageState();
+  State<LoginPage> createState() => _LoginPageState();
 }
 
 class _LoginPageState extends State<LoginPage> {
-  TextEditingController nameController = TextEditingController();
-  TextEditingController pinController = TextEditingController();
-
-  FlutterSoundRecorder recorder = FlutterSoundRecorder();
-  FlutterSoundPlayer player = FlutterSoundPlayer();
+  final TextEditingController nameController = TextEditingController();
+  final TextEditingController pinController = TextEditingController();
 
   final FirestoreService firestoreService = FirestoreService();
 
+  late FlutterSoundRecorder recorder;
+  late FlutterSoundPlayer player;
+
+  bool isRecorderReady = false;
   bool isRecording = false;
   bool hasRecorded = false;
   bool isPlaying = false;
+
   String? audioPath;
+
+  // Change this if testing on real device / different PC setup
+  final String serverUrl = "http://192.168.1.6:5000/extract_voice";
 
   @override
   void initState() {
@@ -35,50 +44,83 @@ class _LoginPageState extends State<LoginPage> {
     initRecorder();
   }
 
-  Future initRecorder() async {
-    await Permission.microphone.request();
-    await recorder.openRecorder();
-    await player.openPlayer();
-  }
+  Future<void> initRecorder() async {
+    final status = await Permission.microphone.request();
 
-  Future<void> _startRecording() async {
-    var status = await Permission.microphone.request();
     if (status != PermissionStatus.granted) {
-      print("Microphone permission not granted");
       return;
     }
 
-    Directory tempDir = await getTemporaryDirectory();
-    audioPath = '${tempDir.path}/voice.aac';
+    recorder = FlutterSoundRecorder();
+    player = FlutterSoundPlayer();
 
-    await recorder.startRecorder(toFile: audioPath);
+    await recorder.openRecorder();
+    await player.openPlayer();
+
+    isRecorderReady = true;
+    setState(() {});
+  }
+
+  Future<void> _startRecording() async {
+    final status = await Permission.microphone.request();
+    if (status != PermissionStatus.granted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Microphone permission not granted")),
+      );
+      return;
+    }
+
+    if (!isRecorderReady) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Recorder is not ready")),
+      );
+      return;
+    }
+
+    final Directory tempDir = await getTemporaryDirectory();
+    audioPath = '${tempDir.path}/voice_sample.aac';
+
+    await recorder.startRecorder(
+      toFile: audioPath,
+      codec: Codec.aacADTS,
+    );
+
     setState(() {
       isRecording = true;
+      hasRecorded = false;
     });
   }
 
   Future<void> _stopRecording() async {
-    await recorder.stopRecorder();
+    if (!isRecorderReady) return;
+
+    audioPath = await recorder.stopRecorder();
+
     setState(() {
       isRecording = false;
-      hasRecorded = true;
+      hasRecorded = audioPath != null;
     });
   }
 
   Future<void> _playRecording() async {
-    if (audioPath != null && !isPlaying) {
+    if (audioPath == null) return;
+
+    if (!isPlaying) {
       await player.startPlayer(
         fromURI: audioPath,
         whenFinished: () {
-          setState(() {
-            isPlaying = false;
-          });
+          if (mounted) {
+            setState(() {
+              isPlaying = false;
+            });
+          }
         },
       );
+
       setState(() {
         isPlaying = true;
       });
-    } else if (isPlaying) {
+    } else {
       await player.stopPlayer();
       setState(() {
         isPlaying = false;
@@ -86,24 +128,62 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  void _resetAll() {
+  Future<List<double>?> extractVoiceFeatures() async {
+    try {
+      if (audioPath == null) {
+        debugPrint("No audio file found");
+        return null;
+      }
+
+      final uri = Uri.parse(serverUrl);
+      final request = http.MultipartRequest("POST", uri);
+
+      request.files.add(
+        await http.MultipartFile.fromPath('audio', audioPath!),
+      );
+
+      request.fields['user_id'] = pinController.text.trim();
+
+      final response = await request.send();
+
+      if (response.statusCode == 200) {
+        final responseString = await response.stream.bytesToString();
+        final jsonData = jsonDecode(responseString);
+
+        final List<dynamic> features = jsonData["features"];
+        return List<double>.from(features);
+      } else {
+        debugPrint("Server error: ${response.statusCode}");
+        return null;
+      }
+    } catch (e) {
+      debugPrint("Voice extraction error: $e");
+      return null;
+    }
+  }
+
+  void _resetAll() async {
     nameController.clear();
     pinController.clear();
+
     if (isRecording) {
-      _stopRecording();
+      await _stopRecording();
     }
+
     if (isPlaying) {
-      player.stopPlayer();
+      await player.stopPlayer();
     }
+
     setState(() {
       hasRecorded = false;
+      isPlaying = false;
       audioPath = null;
     });
   }
 
   Future<void> _submitUser() async {
-    String name = nameController.text.trim();
-    String pin = pinController.text.trim();
+    final String name = nameController.text.trim();
+    final String pin = pinController.text.trim();
 
     if (name.isEmpty || pin.isEmpty) {
       showDialog(
@@ -115,14 +195,21 @@ class _LoginPageState extends State<LoginPage> {
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text("OK"),
-            )
+            ),
           ],
         ),
       );
       return;
     }
 
-    if (!hasRecorded) {
+    if (pin.length != 4) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("PIN must be 4 digits")),
+      );
+      return;
+    }
+
+    if (!hasRecorded || audioPath == null) {
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
@@ -132,14 +219,34 @@ class _LoginPageState extends State<LoginPage> {
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text("OK"),
-            )
+            ),
           ],
         ),
       );
       return;
     }
 
+    // loading dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+
     try {
+      final List<double>? voiceFeatures = await extractVoiceFeatures();
+
+      if (mounted) Navigator.pop(context);
+
+      if (voiceFeatures == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Voice extraction failed")),
+        );
+        return;
+      }
+
       final userId = name.toLowerCase().replaceAll(' ', '_');
 
       final user = UserModel(
@@ -147,10 +254,11 @@ class _LoginPageState extends State<LoginPage> {
         name: name,
         pin: pin,
         deviceId: 'test_device_001',
-        voiceFeatureMatrix: [0.12, 0.45, 0.78, 0.23],
+        voiceFeatureMatrix: voiceFeatures,
         balance: 5000,
       );
 
+      // Using your existing service
       await firestoreService.registerUser(user);
 
       final loggedInUser = await firestoreService.loginUser(name, pin);
@@ -162,7 +270,7 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
 
-      Navigator.push(
+      Navigator.pushReplacement(
         context,
         MaterialPageRoute(
           builder: (context) => DashboardPage(
@@ -172,6 +280,8 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
     } catch (e) {
+      if (mounted) Navigator.pop(context);
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Error: $e")),
       );
@@ -180,8 +290,10 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
-    recorder.closeRecorder();
-    player.closePlayer();
+    if (isRecorderReady) {
+      recorder.closeRecorder();
+      player.closePlayer();
+    }
     nameController.dispose();
     pinController.dispose();
     super.dispose();
@@ -211,21 +323,26 @@ class _LoginPageState extends State<LoginPage> {
             TextField(
               controller: pinController,
               keyboardType: TextInputType.number,
+              maxLength: 4,
               obscureText: true,
               decoration: const InputDecoration(
                 labelText: "PIN Number",
                 border: OutlineInputBorder(),
+                counterText: "",
               ),
             ),
             const SizedBox(height: 25),
 
             ElevatedButton.icon(
               icon: Icon(isRecording ? Icons.stop : Icons.mic),
-              label: Text(isRecording
-                  ? "Stop Recording"
-                  : "Record Voice Sample"),
+              label: Text(
+                isRecording ? "Stop Recording" : "Record Voice Sample",
+              ),
               style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 15),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 25,
+                  vertical: 15,
+                ),
               ),
               onPressed: () {
                 if (isRecording) {
@@ -271,7 +388,9 @@ class _LoginPageState extends State<LoginPage> {
                   onPressed: _resetAll,
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 30, vertical: 15),
+                      horizontal: 30,
+                      vertical: 15,
+                    ),
                     backgroundColor: Colors.blue,
                   ),
                   child: const Text(
@@ -286,7 +405,9 @@ class _LoginPageState extends State<LoginPage> {
                   onPressed: _submitUser,
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 30, vertical: 15),
+                      horizontal: 30,
+                      vertical: 15,
+                    ),
                     backgroundColor: Colors.blue,
                   ),
                   child: const Text(

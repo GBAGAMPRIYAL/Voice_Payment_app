@@ -21,6 +21,10 @@ dependencies:
   # Backend API call for voice extraction
   http: ^1.2.1
 
+  # Text to Speech / Speech to Text
+  flutter_tts: ^4.2.2
+  speech_to_text: ^7.0.0
+
   # Firebase
   firebase_core: ^4.6.0
   cloud_firestore: ^6.2.0

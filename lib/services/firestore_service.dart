@@ -17,11 +17,11 @@ class FirestoreService {
     await userRef.set(user.toMap());
 
     final defaultContacts = [
-      ContactModel(name: 'Ravi', phone: '9000000001'),
-      ContactModel(name: 'Priya', phone: '9000000002'),
-      ContactModel(name: 'Kumar', phone: '9000000003'),
-      ContactModel(name: 'Divya', phone: '9000000004'),
-      ContactModel(name: 'Arun', phone: '9000000005'),
+      ContactModel(name: 'mary', phone: '7339557366'),
+      ContactModel(name: 'Priya', phone: '9043949982'),
+      ContactModel(name: 'Anu', phone: '9486877486'),
+      ContactModel(name: 'Riya', phone: '8270835891'),
+      ContactModel(name: 'Neha', phone: '9384156404'),
     ];
 
     for (final contact in defaultContacts) {

@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
-import '../models/user_model.dart';
 import '../services/firestore_service.dart';
 import '../services/stt_service.dart';
 import '../services/tts_service.dart';
@@ -30,7 +33,9 @@ class _LoginPageState extends State<LoginPage> {
   bool _voiceFlowStarted = false;
   bool _submitting = false;
 
-  final String serverUrl = "http://192.168.1.6:5000/extract_voice";
+  // Use the exact IP of the laptop where voice_server.py is running.
+  // Change only this line if your laptop IP changes.
+  final String serverUrl = "http://192.168.139.1:5000/extract_voice";
 
   @override
   void initState() {
@@ -48,6 +53,22 @@ class _LoginPageState extends State<LoginPage> {
       _voiceFlowStarted = true;
       await _startGuidedLoginFlow();
     });
+  }
+
+  Future<String> _getCurrentDeviceId() async {
+    final deviceInfo = DeviceInfoPlugin();
+
+    if (Platform.isAndroid) {
+      final info = await deviceInfo.androidInfo;
+      return info.fingerprint;
+    }
+
+    if (Platform.isIOS) {
+      final info = await deviceInfo.iosInfo;
+      return info.identifierForVendor ?? 'ios_unknown_device';
+    }
+
+    return 'unknown_device';
   }
 
   String _extractDigits(String input) {
@@ -312,7 +333,8 @@ class _LoginPageState extends State<LoginPage> {
       hasRecorded = voiceRecordService.audioPath != null;
     });
 
-    await Future.delayed(const Duration(milliseconds: 400));
+    // Important: give the file time to fully flush to storage
+    await Future.delayed(const Duration(milliseconds: 900));
   }
 
   Future<void> _playRecording() async {
@@ -348,13 +370,29 @@ class _LoginPageState extends State<LoginPage> {
   Future<List<double>?> extractVoiceFeatures() async {
     try {
       final audioPath = voiceRecordService.audioPath;
-      if (audioPath == null) {
-        debugPrint('No audio file found');
+
+      if (audioPath == null || audioPath.isEmpty) {
+        debugPrint('Voice extraction failed: audio path is null or empty');
         return null;
       }
 
-      debugPrint('Sending audio to: $serverUrl');
+      final audioFile = File(audioPath);
+
+      final exists = await audioFile.exists();
+      if (!exists) {
+        debugPrint('Voice extraction failed: file does not exist at $audioPath');
+        return null;
+      }
+
+      final fileSize = await audioFile.length();
+      if (fileSize <= 0) {
+        debugPrint('Voice extraction failed: file is empty');
+        return null;
+      }
+
+      debugPrint('Uploading file to $serverUrl');
       debugPrint('Audio path: $audioPath');
+      debugPrint('Audio size: $fileSize bytes');
 
       final uri = Uri.parse(serverUrl);
       final request = http.MultipartRequest('POST', uri);
@@ -365,26 +403,49 @@ class _LoginPageState extends State<LoginPage> {
 
       request.fields['user_id'] = pinController.text.trim();
 
-      final response = await request.send();
-      final responseString = await response.stream.bytesToString();
+      final streamedResponse =
+          await request.send().timeout(const Duration(seconds: 30));
 
-      debugPrint('Status code: ${response.statusCode}');
+      final responseString = await streamedResponse.stream.bytesToString();
+
+      debugPrint('Status code: ${streamedResponse.statusCode}');
       debugPrint('Response body: $responseString');
 
-      if (response.statusCode == 200) {
-        final jsonData = jsonDecode(responseString);
-
-        if (jsonData['features'] == null) {
-          debugPrint('features key missing in response');
-          return null;
-        }
-
-        final List<dynamic> features = jsonData['features'];
-        return List<double>.from(features);
-      } else {
-        debugPrint('Server error: ${response.statusCode}');
+      if (streamedResponse.statusCode != 200) {
         return null;
       }
+
+      final jsonData = jsonDecode(responseString);
+
+      if (jsonData is! Map<String, dynamic>) {
+        debugPrint('Voice extraction failed: invalid JSON object');
+        return null;
+      }
+
+      if (!jsonData.containsKey('features')) {
+        debugPrint('Voice extraction failed: missing "features" key');
+        return null;
+      }
+
+      final rawFeatures = jsonData['features'];
+      if (rawFeatures is! List) {
+        debugPrint('Voice extraction failed: features is not a list');
+        return null;
+      }
+
+      final features = rawFeatures
+          .map((e) => (e as num).toDouble())
+          .toList();
+
+      if (features.isEmpty) {
+        debugPrint('Voice extraction failed: empty features list');
+        return null;
+      }
+
+      return features;
+    } on TimeoutException {
+      debugPrint('Voice extraction failed: request timed out');
+      return null;
     } catch (e) {
       debugPrint('Voice extraction error: $e');
       return null;
@@ -463,37 +524,39 @@ class _LoginPageState extends State<LoginPage> {
       if (voiceFeatures == null) {
         _submitting = false;
         if (!mounted) return;
+
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Voice extraction failed')),
+          const SnackBar(
+            content: Text(
+              'Voice extraction failed. Check server, laptop IP, ffmpeg, and recorded audio.',
+            ),
+          ),
         );
+
         await TtsService.instance.speak(
-          'Voice extraction failed. Please try again.',
+          'Voice extraction failed. Please check the voice server connection and try again.',
         );
+
         await _postRecordingCommandLoop();
         return;
       }
 
-      final userId = name.toLowerCase().replaceAll(' ', '_');
+      final currentDeviceId = await _getCurrentDeviceId();
 
-      final user = UserModel(
-        userId: userId,
+      final loggedInUser = await firestoreService.secureLoginOrRegisterUser(
         name: name,
         pin: pin,
-        deviceId: 'test_device_001',
+        deviceId: currentDeviceId,
         voiceFeatureMatrix: voiceFeatures,
-        balance: 5000,
       );
-
-      await firestoreService.registerUser(user);
-      final loggedInUser = await firestoreService.loginUser(name, pin);
 
       if (loggedInUser == null) {
         _submitting = false;
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Login failed')),
+          const SnackBar(content: Text('Invalid user')),
         );
-        await TtsService.instance.speak('Login failed. Please try again.');
+        await TtsService.instance.speak('Invalid user.');
         return;
       }
 

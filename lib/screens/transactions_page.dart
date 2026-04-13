@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -46,6 +49,22 @@ class _TransactionsPageState extends State<TransactionsPage> {
       _voiceFlowStarted = true;
       await _startTransactionFlow();
     });
+  }
+
+  Future<String> _getCurrentDeviceId() async {
+    final deviceInfo = DeviceInfoPlugin();
+
+    if (Platform.isAndroid) {
+      final info = await deviceInfo.androidInfo;
+      return info.fingerprint;
+    }
+
+    if (Platform.isIOS) {
+      final info = await deviceInfo.iosInfo;
+      return info.identifierForVendor ?? 'ios_unknown_device';
+    }
+
+    return 'unknown_device';
   }
 
   Future<void> _startTransactionFlow() async {
@@ -124,12 +143,19 @@ class _TransactionsPageState extends State<TransactionsPage> {
       return;
     }
 
-    final success = await firestoreService.submitTransaction(
-      userId: widget.userId,
+    final currentDeviceId = await _getCurrentDeviceId();
+
+    final result = await firestoreService.submitSecureTransaction(
+      senderUserId: widget.userId,
+      senderName: widget.userName,
       receiverName: receiverController.text.trim(),
       amount: amount,
       pin: pinController.text.trim(),
+      currentDeviceId: currentDeviceId,
     );
+
+    final success = result['success'] == true;
+    final message = (result['message'] ?? 'Transaction failed').toString();
 
     if (success) {
       final updatedBalance = await firestoreService.getBalance(widget.userId);
@@ -140,18 +166,13 @@ class _TransactionsPageState extends State<TransactionsPage> {
       await TtsService.instance.speak(
         'Transaction successful. Your current balance is rupees $updatedBalance',
       );
-
       _resetTransactionForm();
     } else {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Transaction failed: wrong PIN or insufficient balance'),
-        ),
+        SnackBar(content: Text(message)),
       );
-      await TtsService.instance.speak(
-        'Transaction failed. Please check your pin or account balance.',
-      );
+      await TtsService.instance.speak(message);
     }
   }
 

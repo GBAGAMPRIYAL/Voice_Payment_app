@@ -30,7 +30,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _voiceFlowStarted = false;
   bool _submitting = false;
 
-  final String serverUrl = "http://192.168.1.6:5000/extract_voice";
+  final String serverUrl = "http://192.168.1.43:5000/extract_voice";
 
   @override
   void initState() {

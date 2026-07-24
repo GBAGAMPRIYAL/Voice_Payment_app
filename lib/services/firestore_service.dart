@@ -70,7 +70,7 @@ class FirestoreService {
         .add(transaction.toMap());
   }
 
-  Future<bool> submitTransaction({
+  Future<String> submitTransaction({
     required String userId,
     required String receiverName,
     required int amount,
@@ -79,14 +79,14 @@ class FirestoreService {
     final userRef = _firestore.collection('users').doc(userId);
     final doc = await userRef.get();
 
-    if (!doc.exists) return false;
+    if (!doc.exists) return 'user_not_found';
 
     final data = doc.data()!;
     final currentPin = data['pin'];
     final currentBalance = data['balance'];
 
-    if (currentPin != pin) return false;
-    if (currentBalance < amount) return false;
+    if (currentPin != pin) return 'wrong_pin';
+    if (currentBalance < amount) return 'insufficient_balance';
 
     await userRef.update({
       'balance': currentBalance - amount,
@@ -100,6 +100,6 @@ class FirestoreService {
 
     await addTransaction(userId, transaction);
 
-    return true;
+    return 'success';
   }
 }

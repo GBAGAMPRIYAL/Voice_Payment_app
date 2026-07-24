@@ -124,14 +124,14 @@ class _TransactionsPageState extends State<TransactionsPage> {
       return;
     }
 
-    final success = await firestoreService.submitTransaction(
+    final result = await firestoreService.submitTransaction(
       userId: widget.userId,
       receiverName: receiverController.text.trim(),
       amount: amount,
       pin: pinController.text.trim(),
     );
 
-    if (success) {
+    if (result == 'success') {
       final updatedBalance = await firestoreService.getBalance(widget.userId);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -140,18 +140,31 @@ class _TransactionsPageState extends State<TransactionsPage> {
       await TtsService.instance.speak(
         'Transaction successful. Your current balance is rupees $updatedBalance',
       );
-
       _resetTransactionForm();
+    } else if (result == 'wrong_pin') {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PIN verification failed')),
+      );
+      await TtsService.instance.speak(
+        'PIN verification failed. Please say your correct four digit pin.',
+      );
+      pinController.clear();
+      await _startTransactionFlow();
+    } else if (result == 'insufficient_balance') {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Insufficient balance')),
+      );
+      await TtsService.instance.speak(
+        'Transaction failed. You do not have sufficient balance.',
+      );
     } else {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Transaction failed: wrong PIN or insufficient balance'),
-        ),
+        const SnackBar(content: Text('Transaction failed')),
       );
-      await TtsService.instance.speak(
-        'Transaction failed. Please check your pin or account balance.',
-      );
+      await TtsService.instance.speak('Transaction failed. Please try again.');
     }
   }
 

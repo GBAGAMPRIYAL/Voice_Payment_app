@@ -37,11 +37,13 @@ class FirestoreService {
         .limit(1)
         .get();
 
-    if (query.docs.isEmpty) {
-      return null;
-    }
+    if (query.docs.isEmpty) return null;
 
-    return UserModel.fromMap(query.docs.first.data());
+    final doc = query.docs.first;
+    final data = doc.data();
+    // Always use the actual Firestore document ID — never the field value
+    data['userId'] = doc.id;
+    return UserModel.fromMap(data);
   }
 
   Future<int> getBalance(String userId) async {
@@ -68,6 +70,38 @@ class FirestoreService {
         .doc(userId)
         .collection('transactions')
         .add(transaction.toMap());
+  }
+
+  Future<Map<String, dynamic>?> getUserDoc(String userId) async {
+    final doc = await _firestore.collection('users').doc(userId).get();
+    return doc.exists ? doc.data() : null;
+  }
+
+  Future<String> submitTransactionVerified({
+    required String userId,
+    required String receiverName,
+    required int amount,
+  }) async {
+    final userRef = _firestore.collection('users').doc(userId);
+    final doc = await userRef.get();
+
+    if (!doc.exists) return 'user_not_found';
+
+    final currentBalance = doc.data()!['balance'] as int;
+    if (currentBalance < amount) return 'insufficient_balance';
+
+    await userRef.update({'balance': currentBalance - amount});
+
+    await addTransaction(
+      userId,
+      TransactionModel(
+        receiverName: receiverName,
+        amount: amount,
+        dateTime: DateTime.now(),
+      ),
+    );
+
+    return 'success';
   }
 
   Future<String> submitTransaction({

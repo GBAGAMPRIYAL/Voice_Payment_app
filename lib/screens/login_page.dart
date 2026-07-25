@@ -178,11 +178,7 @@ class _LoginPageState extends State<LoginPage> {
       if (heard.contains('record') || heard.contains('start')) {
         if (!isRecording) {
           await _startRecording();
-          if (isRecording) {
-            await TtsService.instance.speak(
-              'Recording started. Say stop when you are done.',
-            );
-          }
+          // Do NOT speak after starting — audio is now recording
         }
         continue;
       }

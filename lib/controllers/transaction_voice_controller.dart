@@ -17,12 +17,14 @@ class TransactionVoiceController {
   Future<void> startTransactionFlow({
     required Future<void> Function(String value) onReceiverCaptured,
     required Future<void> Function(String value) onAmountCaptured,
-    required Future<void> Function(String value) onPinCaptured,
+    required Future<bool> Function() onVoiceAuth,
+    required Future<bool> Function(String pin) onPinVerify,
     required Future<void> Function() onConfirmedSubmit,
     required Future<void> Function() onConfirmChecked,
     required Future<void> Function() onReset,
     required Future<void> Function() onExit,
     required Future<void> Function() onClose,
+    required Future<void> Function() onVerificationFailed,
   }) async {
     final receiverName = await _askReceiver();
     if (receiverName == null) return;
@@ -32,9 +34,49 @@ class TransactionVoiceController {
     if (amount == null) return;
     await onAmountCaptured(amount);
 
-    final pin = await _askPin();
-    if (pin == null) return;
-    await onPinCaptured(pin);
+    // Step 1: Voice auth with fixed phrase, one retry
+    await ttsService.speak(
+      'Voice authorization required. Please say: authorize transaction.',
+    );
+    bool voiceVerified = await onVoiceAuth();
+
+    if (!voiceVerified) {
+      await ttsService.speak(
+        'Voice verification failed. Please try once more. Say: authorize transaction.',
+      );
+      voiceVerified = await onVoiceAuth();
+    }
+
+    if (!voiceVerified) {
+      await ttsService.speak(
+        'Voice verification failed twice. Returning to home page.',
+      );
+      await onVerificationFailed();
+      return;
+    }
+
+    // Step 2: PIN verify, one retry
+    final pin1 = await _askPin();
+    if (pin1 == null) return;
+
+    bool pinVerified = await onPinVerify(pin1);
+
+    if (!pinVerified) {
+      await ttsService.speak(
+        'PIN verification failed. Please say your pin once more.',
+      );
+      final pin2 = await _askPin();
+      if (pin2 == null) return;
+      pinVerified = await onPinVerify(pin2);
+    }
+
+    if (!pinVerified) {
+      await ttsService.speak(
+        'PIN verification failed twice. Returning to home page.',
+      );
+      await onVerificationFailed();
+      return;
+    }
 
     await _confirmAndSubmit(
       receiverName: receiverName,
@@ -60,9 +102,7 @@ class TransactionVoiceController {
       if (command == VoiceCommandType.close) return null;
 
       final receiverName = SpeechParser.cleanName(receiverText);
-      if (receiverName.isNotEmpty) {
-        return receiverName;
-      }
+      if (receiverName.isNotEmpty) return receiverName;
 
       await ttsService.speak('I did not get the receiver name. Let me ask again.');
     }
@@ -78,9 +118,7 @@ class TransactionVoiceController {
       if (command == VoiceCommandType.close) return null;
 
       final amount = SpeechParser.normalizeAmount(amountText);
-      if (amount.isNotEmpty) {
-        return amount;
-      }
+      if (amount.isNotEmpty) return amount;
 
       await ttsService.speak('I did not get a valid amount. Let me ask again.');
     }
@@ -88,7 +126,7 @@ class TransactionVoiceController {
 
   Future<String?> _askPin() async {
     while (true) {
-      await ttsService.speak('Please say your pin number.');
+      await ttsService.speak('Please say your four digit pin number.');
       final pinText = await sttService.listenOnce();
       final command = commandService.parse(pinText);
 
@@ -96,9 +134,7 @@ class TransactionVoiceController {
       if (command == VoiceCommandType.close) return null;
 
       final pin = SpeechParser.normalizePin(pinText);
-      if (pin.length == 4) {
-        return pin;
-      }
+      if (pin.length == 4) return pin;
 
       await ttsService.speak('Pin should contain four digits. Let me ask again.');
     }

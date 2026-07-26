@@ -1,13 +1,13 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 
 import '../models/user_model.dart';
+import '../services/device_service.dart';
 import '../services/firestore_service.dart';
+import '../services/head_tilt_service.dart';
 import '../services/stt_service.dart';
+import '../services/tap_pattern_service.dart';
 import '../services/tts_service.dart';
-import '../services/voice_record_service.dart';
 import 'dashboard_page.dart';
 
 class LoginPage extends StatefulWidget {
@@ -18,31 +18,27 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final TextEditingController nameController = TextEditingController();
-  final TextEditingController pinController = TextEditingController();
+  final nameController = TextEditingController();
+  final pinController = TextEditingController();
 
   final FirestoreService firestoreService = FirestoreService();
-  final VoiceRecordService voiceRecordService = VoiceRecordService();
+  final TapPatternService tapService = TapPatternService();
+  final HeadTiltService tiltService = HeadTiltService();
 
-  bool isRecording = false;
-  bool hasRecorded = false;
-  bool isPlaying = false;
   bool _voiceFlowStarted = false;
   bool _submitting = false;
-
-  final String serverUrl = "http://192.168.1.6:5000/extract_voice";
+  bool _capturingTap = false;
+  bool _capturingTilt = false;
 
   @override
   void initState() {
     super.initState();
-    _initializeVoiceModules();
+    _init();
   }
 
-  Future<void> _initializeVoiceModules() async {
-    await voiceRecordService.init();
+  Future<void> _init() async {
     await TtsService.instance.init();
     await SttService.instance.init();
-
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || _voiceFlowStarted) return;
       _voiceFlowStarted = true;
@@ -50,481 +46,160 @@ class _LoginPageState extends State<LoginPage> {
     });
   }
 
-  String _extractDigits(String input) {
-    return input.replaceAll(RegExp(r'[^0-9]'), '');
-  }
+  String _extractDigits(String input) => input.replaceAll(RegExp(r'[^0-9]'), '');
 
-  Future<String> _listenWithRetry({
-    required String prompt,
-    String retryPrompt = 'I did not hear anything. Let me ask again.',
-  }) async {
+  Future<String> _listenWithRetry({required String prompt}) async {
     while (mounted) {
       await TtsService.instance.speak(prompt);
       final heard = (await SttService.instance.listenOnce()).trim();
-
       if (!mounted) return '';
-
-      if (heard.isEmpty) {
-        await TtsService.instance.speak(retryPrompt);
-        continue;
-      }
-
+      if (heard.isEmpty) { await TtsService.instance.speak('I did not hear anything. Let me ask again.'); continue; }
       final lower = heard.toLowerCase();
-
-      if (lower.contains('close')) {
-        await TtsService.instance.speak('Closing the app.');
-        await SystemNavigator.pop();
-        return '';
-      }
-
-      if (lower.contains('exit')) {
-        Navigator.of(context).maybePop();
-        return '';
-      }
-
+      if (lower.contains('close')) { await TtsService.instance.speak('Closing the app.'); await SystemNavigator.pop(); return ''; }
+      if (lower.contains('exit')) { Navigator.of(context).maybePop(); return ''; }
       return heard;
     }
-
     return '';
   }
 
   Future<void> _startGuidedLoginFlow() async {
     await _captureName();
     if (!mounted) return;
-
     await _capturePin();
     if (!mounted) return;
-
-    await _captureVoiceSample();
+    await _captureTapPattern();
+    // tap and tilt continue via Done buttons → _onTapDone → _onTiltDone → _submitUser
   }
 
   Future<void> _captureName() async {
     while (mounted && nameController.text.trim().isEmpty) {
-      final heard = await _listenWithRetry(
-        prompt:
-            'Welcome to Voice Pay. Please say your name. You can also say reset, exit or close.',
-      );
-
-      if (!mounted) return;
-      if (heard.isEmpty) continue;
-
-      final lower = heard.toLowerCase();
-
-      if (lower.contains('reset')) {
-        await _resetAll();
-        continue;
-      }
-
-      setState(() {
-        nameController.text = heard.trim();
-      });
+      final heard = await _listenWithRetry(prompt: 'Welcome to Voice Pay. Please say your name.');
+      if (!mounted || heard.isEmpty) continue;
+      if (heard.toLowerCase().contains('reset')) { await _resetAll(); continue; }
+      setState(() => nameController.text = heard.trim());
     }
   }
 
   Future<void> _capturePin() async {
     while (mounted && pinController.text.trim().length != 4) {
-      final heard = await _listenWithRetry(
-        prompt:
-            'Please say your four digit pin number. You can also say reset, exit or close.',
-      );
-
-      if (!mounted) return;
-      if (heard.isEmpty) continue;
-
-      final lower = heard.toLowerCase();
-
-      if (lower.contains('reset')) {
-        await _resetAll();
-        await _captureName();
-        continue;
-      }
-
+      final heard = await _listenWithRetry(prompt: 'Please say your four digit pin number.');
+      if (!mounted || heard.isEmpty) continue;
+      if (heard.toLowerCase().contains('reset')) { await _resetAll(); await _captureName(); continue; }
       final digits = _extractDigits(heard);
-
       if (digits.length == 4) {
-        setState(() {
-          pinController.text = digits;
-        });
+        setState(() => pinController.text = digits);
       } else {
-        await TtsService.instance.speak(
-          'Pin must contain exactly four digits. Let me ask again.',
-        );
+        await TtsService.instance.speak('Pin must be exactly four digits. Let me ask again.');
       }
     }
   }
 
-  Future<void> _captureVoiceSample() async {
-    while (mounted && !hasRecorded) {
-      if (!isRecording) {
-        await TtsService.instance.speak(
-          'Now record your voice sample. Say record to start recording, stop to stop recording, reset to edit details, exit to go back, or close to close the app.',
-        );
-      }
-
-      final heard =
-          (await SttService.instance.listenOnce()).toLowerCase().trim();
-
-      if (!mounted) return;
-
-      if (heard.isEmpty) {
-        if (!isRecording) {
-          await TtsService.instance.speak(
-            'I did not hear any command. Let me ask again.',
-          );
-        }
-        continue;
-      }
-
-      if (heard.contains('record') || heard.contains('start')) {
-        if (!isRecording) {
-          await _startRecording();
-          if (isRecording) {
-            await TtsService.instance.speak(
-              'Recording started. Say stop when you are done.',
-            );
-          }
-        }
-        continue;
-      }
-
-      if (heard.contains('stop')) {
-        if (isRecording) {
-          await _stopRecording();
-          if (hasRecorded) {
-            await TtsService.instance.speak(
-              'Voice sample recorded successfully. Say submit to continue, play to hear it, or reset to edit the details.',
-            );
-            await _postRecordingCommandLoop();
-            return;
-          }
-        } else {
-          await TtsService.instance.speak(
-            'Recording has not started yet. Say record to start.',
-          );
-        }
-        continue;
-      }
-
-      if (heard.contains('reset')) {
-        await _resetAll();
-        await _startGuidedLoginFlow();
-        return;
-      }
-
-      if (heard.contains('exit')) {
-        Navigator.of(context).maybePop();
-        return;
-      }
-
-      if (heard.contains('close')) {
-        await TtsService.instance.speak('Closing the app.');
-        await SystemNavigator.pop();
-        return;
-      }
-
-      if (!isRecording) {
-        await TtsService.instance.speak(
-          'Invalid command. Please say record, stop, reset, exit or close.',
-        );
-      }
-    }
-  }
-
-  Future<void> _postRecordingCommandLoop() async {
-    while (mounted) {
-      await TtsService.instance.speak(
-        'Say submit to continue, play to hear your voice sample, reset to edit details, exit to go back, or close to close the app.',
-      );
-
-      final heard =
-          (await SttService.instance.listenOnce()).toLowerCase().trim();
-
-      if (!mounted) return;
-
-      if (heard.isEmpty) {
-        await TtsService.instance.speak(
-          'I did not hear any command. Let me ask again.',
-        );
-        continue;
-      }
-
-      if (heard.contains('submit')) {
-        await _submitUser();
-        return;
-      }
-
-      if (heard.contains('play')) {
-        await _playRecording();
-        continue;
-      }
-
-      if (heard.contains('reset')) {
-        await _resetAll();
-        await _startGuidedLoginFlow();
-        return;
-      }
-
-      if (heard.contains('exit')) {
-        Navigator.of(context).maybePop();
-        return;
-      }
-
-      if (heard.contains('close')) {
-        await TtsService.instance.speak('Closing the app.');
-        await SystemNavigator.pop();
-        return;
-      }
-
-      await TtsService.instance.speak(
-        'Invalid command. Please say submit, play, reset, exit or close.',
-      );
-    }
-  }
-
-  Future<void> _startRecording() async {
-    await SttService.instance.stop();
-    await TtsService.instance.stop();
-    await Future.delayed(const Duration(milliseconds: 400));
-
-    final started = await voiceRecordService.startRecording();
-    if (!started) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Microphone permission not granted')),
-      );
-      await TtsService.instance.speak('Microphone permission not granted.');
-      return;
-    }
-
-    if (!mounted) return;
-    setState(() {
-      isRecording = true;
-      hasRecorded = false;
-    });
-  }
-
-  Future<void> _stopRecording() async {
-    await voiceRecordService.stopRecording();
-
-    if (!mounted) return;
-    setState(() {
-      isRecording = false;
-      hasRecorded = voiceRecordService.audioPath != null;
-    });
-
-    await Future.delayed(const Duration(milliseconds: 400));
-  }
-
-  Future<void> _playRecording() async {
-    if (voiceRecordService.audioPath == null) return;
-
-    await SttService.instance.stop();
-    await TtsService.instance.stop();
-
-    if (voiceRecordService.player.isPlaying) {
-      await voiceRecordService.player.stopPlayer();
-      if (!mounted) return;
-      setState(() {
-        isPlaying = false;
-      });
-      return;
-    }
-
-    await voiceRecordService.togglePlayback(
-      onPlaybackFinished: () {
-        if (!mounted) return;
-        setState(() {
-          isPlaying = false;
-        });
-      },
+  Future<void> _captureTapPattern() async {
+    tapService.reset();
+    await TtsService.instance.speak(
+      'Now set your tap pattern. Tap the screen at least 4 times in your own rhythm. Long press to finish.',
     );
-
-    if (!mounted) return;
-    setState(() {
-      isPlaying = true;
-    });
+    setState(() => _capturingTap = true);
+    // Wait until user presses Done button (handled by _onTapDone)
   }
 
-  Future<List<double>?> extractVoiceFeatures() async {
-    try {
-      final audioPath = voiceRecordService.audioPath;
-      if (audioPath == null) {
-        debugPrint('No audio file found');
-        return null;
-      }
-
-      debugPrint('Sending audio to: $serverUrl');
-      debugPrint('Audio path: $audioPath');
-
-      final uri = Uri.parse(serverUrl);
-      final request = http.MultipartRequest('POST', uri);
-
-      request.files.add(
-        await http.MultipartFile.fromPath('audio', audioPath),
-      );
-
-      request.fields['user_id'] = pinController.text.trim();
-
-      final response = await request.send();
-      final responseString = await response.stream.bytesToString();
-
-      debugPrint('Status code: ${response.statusCode}');
-      debugPrint('Response body: $responseString');
-
-      if (response.statusCode == 200) {
-        final jsonData = jsonDecode(responseString);
-
-        if (jsonData['features'] == null) {
-          debugPrint('features key missing in response');
-          return null;
-        }
-
-        final List<dynamic> features = jsonData['features'];
-        return List<double>.from(features);
-      } else {
-        debugPrint('Server error: ${response.statusCode}');
-        return null;
-      }
-    } catch (e) {
-      debugPrint('Voice extraction error: $e');
-      return null;
+  Future<void> _onTapDone() async {
+    if (tapService.tapCount < 4) {
+      await TtsService.instance.speak('Please tap at least 4 times first.');
+      return;
     }
+    setState(() => _capturingTap = false);
+    await TtsService.instance.speak('Tap pattern saved with ${tapService.tapCount} taps.');
+    await _captureHeadTilt();
+  }
+
+  Future<void> _captureHeadTilt() async {
+    tiltService.reset();
+    await TtsService.instance.speak(
+      'Now set your tilt pattern. Tilt your phone left, right, up or down at least 3 times. Double tap the screen to finish.',
+    );
+    setState(() => _capturingTilt = true);
+    tiltService.startListening();
+    // Wait until user presses Done button (handled by _onTiltDone)
+  }
+
+  Future<void> _onTiltDone() async {
+    if (tiltService.sequence.length < 3) {
+      await TtsService.instance.speak('Please do at least 3 tilts first.');
+      return;
+    }
+    tiltService.stopListening();
+    setState(() => _capturingTilt = false);
+    await TtsService.instance.speak('Tilt pattern saved with ${tiltService.sequence.length} tilts.');
+    await _submitUser();
   }
 
   Future<void> _resetAll() async {
     nameController.clear();
     pinController.clear();
-    await voiceRecordService.reset();
-
+    tapService.reset();
+    tiltService.reset();
+    tiltService.stopListening();
     if (!mounted) return;
-    setState(() {
-      isRecording = false;
-      hasRecorded = false;
-      isPlaying = false;
-    });
+    setState(() { _capturingTap = false; _capturingTilt = false; });
   }
 
   Future<void> _submitUser() async {
     if (_submitting) return;
     _submitting = true;
 
-    final String name = nameController.text.trim();
-    final String pin = pinController.text.trim();
+    final name = nameController.text.trim();
+    final pin = pinController.text.trim();
 
-    if (name.isEmpty) {
+    if (name.isEmpty || pin.length != 4 || tapService.getIntervals().isEmpty || tiltService.sequence.isEmpty) {
       _submitting = false;
-      await TtsService.instance.speak('Username is missing. Let me ask again.');
-      await _captureName();
-      if (mounted && pinController.text.trim().length == 4 && hasRecorded) {
-        await _postRecordingCommandLoop();
-      }
-      return;
-    }
-
-    if (pin.isEmpty || pin.length != 4) {
-      _submitting = false;
-      await TtsService.instance.speak(
-        'Pin is missing or invalid. Let me ask again.',
-      );
-      await _capturePin();
-      if (mounted && hasRecorded) {
-        await _postRecordingCommandLoop();
-      }
-      return;
-    }
-
-    if (!hasRecorded || voiceRecordService.audioPath == null) {
-      _submitting = false;
-      await TtsService.instance.speak(
-        'Voice sample is missing. Let me ask again.',
-      );
-      await _captureVoiceSample();
+      await TtsService.instance.speak('Some details are missing. Please try again.');
+      await _startGuidedLoginFlow();
       return;
     }
 
     await SttService.instance.stop();
     await TtsService.instance.stop();
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const Center(
-        child: CircularProgressIndicator(),
-      ),
-    );
+    if (mounted) showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
 
     try {
-      final List<double>? voiceFeatures = await extractVoiceFeatures();
-
-      if (mounted) {
-        Navigator.pop(context);
-      }
-
-      if (voiceFeatures == null) {
-        _submitting = false;
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Voice extraction failed')),
-        );
-        await TtsService.instance.speak(
-          'Voice extraction failed. Please try again.',
-        );
-        await _postRecordingCommandLoop();
-        return;
-      }
-
       final userId = name.toLowerCase().replaceAll(' ', '_');
+      final deviceId = await DeviceService.getDeviceId();
 
       final user = UserModel(
         userId: userId,
         name: name,
         pin: pin,
-        deviceId: 'test_device_001',
-        voiceFeatureMatrix: voiceFeatures,
+        deviceId: deviceId,
+        tapIntervals: tapService.getIntervals(),
+        tiltSequence: UserModel.tiltToStrings(tiltService.sequence),
         balance: 5000,
       );
 
       await firestoreService.registerUser(user);
       final loggedInUser = await firestoreService.loginUser(name, pin);
 
+      if (mounted) Navigator.pop(context);
+
       if (loggedInUser == null) {
         _submitting = false;
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Login failed')),
-        );
         await TtsService.instance.speak('Login failed. Please try again.');
         return;
       }
 
-      await TtsService.instance.stop();
-      await SttService.instance.stop();
-
       _submitting = false;
       if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => DashboardPage(
-            userName: loggedInUser.name,
-            userId: loggedInUser.userId,
-          ),
-        ),
-      );
+      Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => DashboardPage(userName: loggedInUser.name, userId: loggedInUser.userId),
+      ));
     } catch (e) {
-      if (mounted) {
-        Navigator.pop(context);
-      }
-
+      if (mounted) Navigator.pop(context);
       _submitting = false;
-
+      debugPrint('Submit error: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
-      await TtsService.instance.speak(
-        'An error occurred while logging in.',
-      );
+      await TtsService.instance.speak('An error occurred. Please try again.');
     }
   }
 
@@ -532,7 +207,7 @@ class _LoginPageState extends State<LoginPage> {
   void dispose() {
     nameController.dispose();
     pinController.dispose();
-    voiceRecordService.dispose();
+    tiltService.stopListening();
     SttService.instance.stop();
     TtsService.instance.stop();
     super.dispose();
@@ -541,21 +216,20 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('🎙️ VoicePay'),
-        centerTitle: true,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
+      appBar: AppBar(title: const Text('🎙️ VoicePay'), centerTitle: true),
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _capturingTap ? () { tapService.recordTap(); setState(() {}); } : null,
+        onLongPress: _capturingTap ? _onTapDone : null,
+        onDoubleTap: _capturingTilt ? _onTiltDone : null,
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             TextField(
               controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'Username',
-                border: OutlineInputBorder(),
-              ),
+              decoration: const InputDecoration(labelText: 'Username', border: OutlineInputBorder()),
             ),
             const SizedBox(height: 20),
             TextField(
@@ -563,98 +237,31 @@ class _LoginPageState extends State<LoginPage> {
               keyboardType: TextInputType.number,
               maxLength: 4,
               obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'PIN Number',
-                border: OutlineInputBorder(),
-                counterText: '',
-              ),
-            ),
-            const SizedBox(height: 25),
-            ElevatedButton.icon(
-              icon: Icon(isRecording ? Icons.stop : Icons.mic),
-              label: Text(
-                isRecording ? 'Stop Recording' : 'Record Voice Sample',
-              ),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 25,
-                  vertical: 15,
-                ),
-              ),
-              onPressed: () async {
-                if (isRecording) {
-                  await _stopRecording();
-                } else {
-                  await _startRecording();
-                }
-              },
+              decoration: const InputDecoration(labelText: 'PIN Number', border: OutlineInputBorder(), counterText: ''),
             ),
             const SizedBox(height: 20),
-            if (hasRecorded)
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade200,
-                  borderRadius: BorderRadius.circular(15),
-                ),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: Icon(isPlaying ? Icons.stop : Icons.play_arrow),
-                      onPressed: _playRecording,
-                    ),
-                    Expanded(
-                      child: Container(
-                        height: 5,
-                        color: Colors.green,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    const Text('Voice Sample'),
-                  ],
-                ),
-              ),
-            const SizedBox(height: 25),
+            if (_capturingTap)
+              const Text('Tap anywhere on screen. Long press when done.', textAlign: TextAlign.center, style: TextStyle(fontSize: 18, color: Colors.deepPurple)),
+            if (_capturingTilt)
+              const Text('Tilt phone now. Double tap anywhere when done.', textAlign: TextAlign.center, style: TextStyle(fontSize: 18, color: Colors.orange)),
+            const SizedBox(height: 20),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 ElevatedButton(
-                  onPressed: _resetAll,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 30,
-                      vertical: 15,
-                    ),
-                  ),
-                  child: const Text(
-                    'Reset',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  onPressed: () async { await _resetAll(); await _startGuidedLoginFlow(); },
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15)),
+                  child: const Text('Reset', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 ),
                 ElevatedButton(
                   onPressed: _submitUser,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 30,
-                      vertical: 15,
-                    ),
-                  ),
-                  child: const Text(
-                    'Submit',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15)),
+                  child: const Text('Submit', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
           ],
+          ),
         ),
       ),
     );

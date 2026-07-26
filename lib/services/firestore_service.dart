@@ -11,6 +11,10 @@ class FirestoreService {
 
     final existingDoc = await userRef.get();
     if (existingDoc.exists) {
+      await userRef.update({
+        'tapIntervals': user.tapIntervals,
+        'tiltSequence': user.tiltSequence,
+      });
       return;
     }
 
@@ -42,6 +46,21 @@ class FirestoreService {
     }
 
     return UserModel.fromMap(query.docs.first.data());
+  }
+
+  Future<String> getSavedDeviceId(String userId) async {
+    final doc = await _firestore.collection('users').doc(userId).get();
+    return doc.data()?['deviceId'] ?? '';
+  }
+
+  Future<List<int>> getSavedTapIntervals(String userId) async {
+    final doc = await _firestore.collection('users').doc(userId).get();
+    return List<int>.from(doc.data()?['tapIntervals'] ?? []);
+  }
+
+  Future<List<String>> getSavedTiltSequence(String userId) async {
+    final doc = await _firestore.collection('users').doc(userId).get();
+    return List<String>.from(doc.data()?['tiltSequence'] ?? []);
   }
 
   Future<int> getBalance(String userId) async {
@@ -85,7 +104,7 @@ class FirestoreService {
     final currentPin = data['pin'];
     final currentBalance = data['balance'];
 
-    if (currentPin != pin) return false;
+    if (currentPin != pin || pin.length != 4) return false;
     if (currentBalance < amount) return false;
 
     await userRef.update({

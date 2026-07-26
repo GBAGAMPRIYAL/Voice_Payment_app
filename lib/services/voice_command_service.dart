@@ -14,6 +14,7 @@ enum VoiceCommandType {
   record,
   stop,
   play,
+  scan,
   unknown,
 }
 
@@ -21,6 +22,9 @@ class VoiceCommandService {
   VoiceCommandType parse(String rawText) {
     final text = rawText.toLowerCase().trim();
 
+    if (_containsAny(text, VoiceKeywords.scan)) {
+      return VoiceCommandType.scan;
+    }
     if (_containsAny(text, VoiceKeywords.transaction)) {
       return VoiceCommandType.transaction;
     }

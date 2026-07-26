@@ -7,6 +7,8 @@ import '../services/firestore_service.dart';
 import '../services/stt_service.dart';
 import '../services/tts_service.dart';
 import '../services/voice_command_service.dart';
+import 'qr_scanner_screen.dart';
+import 'qr_screen.dart';
 import 'transactions_page.dart';
 
 class DashboardPage extends StatefulWidget {
@@ -25,16 +27,20 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   final FirestoreService firestoreService = FirestoreService();
-  late final DashboardVoiceController dashboardVoiceController;
+  late DashboardVoiceController dashboardVoiceController;
 
-  @override
-  void initState() {
-    super.initState();
+  void _reinitVoiceController() {
     dashboardVoiceController = DashboardVoiceController(
       ttsService: TtsService.instance,
       sttService: SttService.instance,
       commandService: VoiceCommandService(),
     );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _reinitVoiceController();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
@@ -49,6 +55,7 @@ class _DashboardPageState extends State<DashboardPage> {
       onBalance: () => _showBalance(context, speakOut: true),
       onContact: () => _showContacts(context, speakOut: true),
       onHelp: () => _showHelp(context, speakOut: true),
+      onScan: _openQrScanner,
       onClose: _closeApp,
     );
   }
@@ -185,10 +192,69 @@ class _DashboardPageState extends State<DashboardPage> {
     await _waitForOkVoiceCommand();
   }
 
-  Future<void> _openTransactionsPage() async {
+  Future<void> _openQrScanner() async {
+    dashboardVoiceController.dispose();
     await TtsService.instance.stop();
     await SttService.instance.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
 
+    final receiverName = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => QrScannerScreen(
+          userId: widget.userId,
+          userName: widget.userName,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (receiverName != null && receiverName.isNotEmpty) {
+      // Scanner returned a receiver — go straight to transactions, skip home voice flow
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => TransactionsPage(
+            userId: widget.userId,
+            userName: widget.userName,
+            prefillReceiver: receiverName,
+          ),
+        ),
+      );
+    }
+
+    if (!mounted) return;
+    _reinitVoiceController();
+    await _startHomeVoiceFlow();
+  }
+
+  Future<void> _showMyQr() async {
+    dashboardVoiceController.dispose();
+    await TtsService.instance.stop();
+    await SttService.instance.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => QrScreen(
+          userId: widget.userId,
+          userName: widget.userName,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    _reinitVoiceController();
+    await _startHomeVoiceFlow();
+  }
+
+  Future<void> _openTransactionsPage() async {
+    dashboardVoiceController.dispose();
+    await TtsService.instance.stop();
+    await SttService.instance.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
     await Navigator.push(
       context,
@@ -199,8 +265,8 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
       ),
     );
-
     if (!mounted) return;
+    _reinitVoiceController();
     await _startHomeVoiceFlow();
   }
 
@@ -253,6 +319,16 @@ class _DashboardPageState extends State<DashboardPage> {
             GestureDetector(
               onTap: _openTransactionsPage,
               child: buildBar(Icons.receipt_long, 'Transactions'),
+            ),
+            const SizedBox(height: 20),
+            GestureDetector(
+              onTap: _openQrScanner,
+              child: buildBar(Icons.qr_code_scanner, 'Scan QR to Pay'),
+            ),
+            const SizedBox(height: 20),
+            GestureDetector(
+              onTap: _showMyQr,
+              child: buildBar(Icons.qr_code, 'My QR Code'),
             ),
             const SizedBox(height: 20),
             GestureDetector(

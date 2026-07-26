@@ -15,11 +15,13 @@ import '../models/user_model.dart';
 class TransactionsPage extends StatefulWidget {
   final String userId;
   final String userName;
+  final String? prefillReceiver;
 
   const TransactionsPage({
     super.key,
     required this.userId,
     required this.userName,
+    this.prefillReceiver,
   });
 
   @override
@@ -54,12 +56,20 @@ class _TransactionsPageState extends State<TransactionsPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || _voiceFlowStarted) return;
       _voiceFlowStarted = true;
+      if (widget.prefillReceiver != null) {
+        receiverController.text = widget.prefillReceiver!;
+      }
+      // Wait for any previous TTS/STT from scanner page to fully stop
+      await TtsService.instance.stop();
+      await SttService.instance.stop();
+      await Future.delayed(const Duration(milliseconds: 800));
       await _startFlow();
     });
   }
 
   Future<void> _startFlow() async {
     await voiceController.startTransactionFlow(
+      prefillReceiver: widget.prefillReceiver,
       onReceiverCaptured: (v) async { if (mounted) setState(() => receiverController.text = v); },
       onAmountCaptured: (v) async { if (mounted) setState(() => amountController.text = v); },
       onPinCaptured: (v) async { if (mounted) setState(() => pinController.text = v); },
@@ -110,6 +120,28 @@ class _TransactionsPageState extends State<TransactionsPage> {
     tiltService.stopListening();
     setState(() => _capturingTilt = false);
     return HeadTiltService.compare(savedSeq, tiltService.sequence);
+  }
+
+  Future<void> _askContinueOrBack() async {
+    await TtsService.instance.speak(
+      'Say continue to make another transaction or back to go home.',
+    );
+    while (mounted) {
+      final heard = (await SttService.instance.listenOnce()).toLowerCase().trim();
+      if (heard.contains('continue')) {
+        _resetForm();
+        _voiceFlowStarted = false;
+        await _startFlow();
+        return;
+      } else if (heard.contains('back') || heard.contains('home')) {
+        if (mounted) Navigator.pop(context);
+        return;
+      } else {
+        await TtsService.instance.speak(
+          'Say continue to make another transaction or back to go home.',
+        );
+      }
+    }
   }
 
   Future<void> _submitTransaction() async {
@@ -174,11 +206,13 @@ class _TransactionsPageState extends State<TransactionsPage> {
       );
       await TtsService.instance.speak('All verifications passed. Transaction successful. Your balance is rupees $balance.');
       _resetForm();
+      await _askContinueOrBack();
     } else {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Transaction failed: wrong PIN or low balance'), backgroundColor: Colors.red),
       );
       await TtsService.instance.speak('Transaction failed. Check your pin or balance.');
+      await _askContinueOrBack();
     }
   }
 

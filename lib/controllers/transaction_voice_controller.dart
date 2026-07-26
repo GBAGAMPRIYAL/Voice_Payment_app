@@ -22,11 +22,19 @@ class TransactionVoiceController {
     required Future<void> Function() onReset,
     required Future<void> Function() onExit,
     required Future<void> Function() onClose,
+    String? prefillReceiver,
   }) async {
-    // Step 1: receiver name via STT
-    final receiver = await _askReceiver();
-    if (receiver == null) { await onExit(); return; }
-    await onReceiverCaptured(receiver);
+    String? receiver;
+
+    if (prefillReceiver != null && prefillReceiver.isNotEmpty) {
+      // QR flow: skip asking, just announce the pre-filled receiver
+      receiver = prefillReceiver;
+      await ttsService.speak('Receiver $receiver has been filled automatically.');
+    } else {
+      receiver = await _askReceiver();
+      if (receiver == null) { await onExit(); return; }
+      await onReceiverCaptured(receiver);
+    }
 
     // Step 2: amount via STT
     final amount = await _askAmount();

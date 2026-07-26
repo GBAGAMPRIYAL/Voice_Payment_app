@@ -12,4 +12,5 @@ class VoiceKeywords {
   static const record = ['record', 'start recording', 'start'];
   static const stop = ['stop', 'stop recording'];
   static const play = ['play', 'listen'];
+  static const scan = ['scan', 'scanner', 'qr', 'scan qr', 'scam', 'skin', 'scheme'];
 }

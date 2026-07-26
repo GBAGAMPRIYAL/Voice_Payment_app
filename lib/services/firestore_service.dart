@@ -48,6 +48,11 @@ class FirestoreService {
     return UserModel.fromMap(query.docs.first.data());
   }
 
+  Future<Map<String, dynamic>?> getUserDoc(String userId) async {
+    final doc = await _firestore.collection('users').doc(userId).get();
+    return doc.exists ? doc.data() : null;
+  }
+
   Future<String> getSavedDeviceId(String userId) async {
     final doc = await _firestore.collection('users').doc(userId).get();
     return doc.data()?['deviceId'] ?? '';

@@ -1,14 +1,16 @@
-import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 
 import '../controllers/transaction_voice_controller.dart';
+import '../services/device_service.dart';
 import '../services/firestore_service.dart';
+import '../services/head_tilt_service.dart';
 import '../services/stt_service.dart';
 import '../services/tts_service.dart';
+import '../services/tap_pattern_service.dart';
 import '../services/voice_command_service.dart';
-import '../services/voice_record_service.dart';
+import '../models/user_model.dart';
 
 class TransactionsPage extends StatefulWidget {
   final String userId;
@@ -27,298 +29,262 @@ class TransactionsPage extends StatefulWidget {
 class _TransactionsPageState extends State<TransactionsPage> {
   final receiverController = TextEditingController();
   final amountController = TextEditingController();
+  final pinController = TextEditingController();
 
   bool confirmAmount = false;
-  bool _verificationPassed = false;
-
-  final FirestoreService firestoreService = FirestoreService();
-  final VoiceRecordService voiceRecordService = VoiceRecordService();
-  late final TransactionVoiceController transactionVoiceController;
   bool _voiceFlowStarted = false;
 
-  static const String _verifyUrl = 'http://192.168.1.43:5000/verify_voice';
-  static const double _similarityThreshold = 0.80;
+  final FirestoreService firestoreService = FirestoreService();
+  final TapPatternService tapService = TapPatternService();
+  final HeadTiltService tiltService = HeadTiltService();
+  bool _capturingTap = false;
+  bool _capturingTilt = false;
+  Completer<void> _tapDoneCompleter = Completer();
+  Completer<void> _tiltDoneCompleter = Completer();
+  late final TransactionVoiceController voiceController;
 
   @override
   void initState() {
     super.initState();
-    transactionVoiceController = TransactionVoiceController(
+    voiceController = TransactionVoiceController(
       ttsService: TtsService.instance,
       sttService: SttService.instance,
       commandService: VoiceCommandService(),
     );
-
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || _voiceFlowStarted) return;
       _voiceFlowStarted = true;
-      await voiceRecordService.init();
-      await _startTransactionFlow();
+      await _startFlow();
     });
   }
 
-  Future<void> _startTransactionFlow() async {
-    await transactionVoiceController.startTransactionFlow(
-      onReceiverCaptured: (value) async {
-        if (!mounted) return;
-        setState(() => receiverController.text = value);
-      },
-      onAmountCaptured: (value) async {
-        if (!mounted) return;
-        setState(() => amountController.text = value);
-      },
-      onVoiceAuth: _performVoiceAuth,
-      onPinVerify: _verifyPin,
-      onConfirmChecked: () async {
-        if (!mounted) return;
-        setState(() => confirmAmount = true);
-      },
-      onConfirmedSubmit: submitTransaction,
-      onReset: () async {
-        _resetTransactionForm();
-        await _startTransactionFlow();
-      },
-      onExit: () async {
-        if (!mounted) return;
-        Navigator.pop(context);
-      },
+  Future<void> _startFlow() async {
+    await voiceController.startTransactionFlow(
+      onReceiverCaptured: (v) async { if (mounted) setState(() => receiverController.text = v); },
+      onAmountCaptured: (v) async { if (mounted) setState(() => amountController.text = v); },
+      onPinCaptured: (v) async { if (mounted) setState(() => pinController.text = v); },
+      onConfirmChecked: () async { if (mounted) setState(() => confirmAmount = true); },
+      onConfirmedSubmit: _submitTransaction,
+      onReset: () async { _resetForm(); await _startFlow(); },
+      onExit: () async { if (mounted) Navigator.pop(context); },
       onClose: () async {
         await TtsService.instance.speak('Closing the app.');
         await SystemNavigator.pop();
       },
-      onVerificationFailed: () async {
-        if (!mounted) return;
-        setState(() => _verificationPassed = false);
-        Navigator.pop(context);
-      },
     );
   }
 
-  /// Records audio silently (no TTS during recording) and sends to server.
-  Future<bool> _performVoiceAuth() async {
-    await SttService.instance.stop();
-    await TtsService.instance.stop();
-    await Future.delayed(const Duration(milliseconds: 300));
-
-    final started = await voiceRecordService.startRecording();
-    if (!started) return false;
-
-    // Record for 4 seconds while user says the fixed phrase
-    await Future.delayed(const Duration(seconds: 4));
-    await voiceRecordService.stopRecording();
-
-    final audioPath = voiceRecordService.audioPath;
-    if (audioPath == null) return false;
-
-    try {
-      final request = http.MultipartRequest('POST', Uri.parse(_verifyUrl));
-      request.files.add(await http.MultipartFile.fromPath('audio', audioPath));
-      request.fields['user_id'] = widget.userId;
-      debugPrint('Sending voice verify for user_id: ${widget.userId}');
-
-      final response = await request.send();
-      final body = await response.stream.bytesToString();
-
-      if (response.statusCode == 200) {
-        final json = jsonDecode(body);
-        final similarity = (json['similarity'] as num).toDouble();
-        debugPrint('Voice similarity: $similarity');
-        if (similarity > _similarityThreshold) {
-          setState(() => _verificationPassed = true);
-          return true;
-        }
-      }
-    } catch (e) {
-      debugPrint('Voice auth error: $e');
-    }
-
-    return false;
-  }
-
-  /// Verifies PIN against Firestore without executing the transaction.
-  Future<bool> _verifyPin(String pin) async {
-    try {
-      final doc = await firestoreService.getUserDoc(widget.userId);
-      if (doc == null) return false;
-      final match = doc['pin'] == pin;
-      if (match) setState(() => _verificationPassed = true);
-      return match;
-    } catch (e) {
-      debugPrint('PIN verify error: $e');
-      return false;
-    }
-  }
-
-  void _resetTransactionForm() {
+  void _resetForm() {
     receiverController.clear();
     amountController.clear();
-    setState(() {
-      confirmAmount = false;
-      _verificationPassed = false;
-    });
+    pinController.clear();
+    setState(() => confirmAmount = false);
   }
 
-  Future<void> submitTransaction() async {
-    if (!_verificationPassed) {
-      await TtsService.instance.speak('Verification failed. Transaction not allowed.');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Verification failed. Transaction not allowed.')),
-      );
-      return;
-    }
+  Future<bool> _verifyDevice() async {
+    final savedDeviceId = await firestoreService.getSavedDeviceId(widget.userId);
+    final currentDeviceId = await DeviceService.getDeviceId();
+    final match = savedDeviceId == currentDeviceId;
+    debugPrint('Device check — saved: $savedDeviceId | current: $currentDeviceId | match: $match');
+    return match;
+  }
 
-    if (receiverController.text.isEmpty ||
-        amountController.text.isEmpty ||
-        !confirmAmount) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all fields and confirm amount')),
-      );
-      await TtsService.instance.speak('Please fill all fields and confirm the amount.');
-      return;
-    }
+  Future<bool> _verifyTapPattern() async {
+    final savedIntervals = await firestoreService.getSavedTapIntervals(widget.userId);
+    tapService.reset();
+    await TtsService.instance.speak('Tap your pattern now. Long press to finish.');
+    setState(() => _capturingTap = true);
+    await _tapDoneCompleter.future;
+    setState(() => _capturingTap = false);
+    return TapPatternService.compare(savedIntervals, tapService.getIntervals());
+  }
 
+  Future<bool> _verifyHeadTilt() async {
+    final savedStrings = await firestoreService.getSavedTiltSequence(widget.userId);
+    final savedSeq = UserModel.stringsToTilt(savedStrings);
+    tiltService.reset();
+    await TtsService.instance.speak('Now do your tilt pattern. Double tap the screen to finish.');
+    setState(() => _capturingTilt = true);
+    tiltService.startListening();
+    await _tiltDoneCompleter.future;
+    tiltService.stopListening();
+    setState(() => _capturingTilt = false);
+    return HeadTiltService.compare(savedSeq, tiltService.sequence);
+  }
+
+  Future<void> _submitTransaction() async {
     final amount = int.tryParse(amountController.text.trim());
     if (amount == null || amount <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid amount')),
-      );
-      await TtsService.instance.speak('Please enter a valid amount.');
+      await TtsService.instance.speak('Invalid amount.');
+      return;
+    }
+    final pin = pinController.text.trim();
+    if (pin.length != 4) {
+      await TtsService.instance.speak('PIN not captured. Please try again.');
       return;
     }
 
-    // PIN was already verified; pass it via the stored verified pin
-    final result = await firestoreService.submitTransactionVerified(
+    // Step 1: Device verification
+    _showDialog('Verifying device...');
+    final deviceMatch = await _verifyDevice();
+    if (mounted) Navigator.pop(context);
+
+    if (!deviceMatch) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('🚫 Device mismatch. Transaction blocked.'), backgroundColor: Colors.red),
+      );
+      await TtsService.instance.speak('Device verification failed. Transaction is blocked.');
+      return;
+    }
+
+    // Step 2: Tap pattern verification
+    _tapDoneCompleter = Completer();
+    final tapMatch = await _verifyTapPattern();
+    if (!tapMatch) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('🚫 Tap pattern mismatch. Transaction blocked.'), backgroundColor: Colors.red),
+      );
+      await TtsService.instance.speak('Tap pattern did not match. Transaction is blocked.');
+      return;
+    }
+
+    // Step 3: Head tilt verification
+    _tiltDoneCompleter = Completer();
+    final tiltMatch = await _verifyHeadTilt();
+    if (!tiltMatch) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('🚫 Tilt pattern mismatch. Transaction blocked.'), backgroundColor: Colors.red),
+      );
+      await TtsService.instance.speak('Tilt pattern did not match. Transaction is blocked.');
+      return;
+    }
+
+    // Step 4: Submit transaction (PIN verified inside Firestore)
+    final success = await firestoreService.submitTransaction(
       userId: widget.userId,
       receiverName: receiverController.text.trim(),
       amount: amount,
+      pin: pin,
     );
 
-    if (result == 'success') {
-      final updatedBalance = await firestoreService.getBalance(widget.userId);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Transaction Successful 💸')),
+    if (success) {
+      final balance = await firestoreService.getBalance(widget.userId);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Transaction Successful 💸'), backgroundColor: Colors.green),
       );
-      await TtsService.instance.speak(
-        'Transaction successful. Your current balance is rupees $updatedBalance',
-      );
-      _resetTransactionForm();
-    } else if (result == 'insufficient_balance') {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Insufficient balance')),
-      );
-      await TtsService.instance.speak(
-        'Transaction failed. You do not have sufficient balance.',
-      );
+      await TtsService.instance.speak('All verifications passed. Transaction successful. Your balance is rupees $balance.');
+      _resetForm();
     } else {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Transaction failed')),
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Transaction failed: wrong PIN or low balance'), backgroundColor: Colors.red),
       );
-      await TtsService.instance.speak('Transaction failed. Please try again.');
+      await TtsService.instance.speak('Transaction failed. Check your pin or balance.');
     }
+  }
+
+  void _showDialog(String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Material(
+              color: Colors.transparent,
+              child: Text(message, style: const TextStyle(color: Colors.white, fontSize: 16)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   void dispose() {
     receiverController.dispose();
     amountController.dispose();
+    pinController.dispose();
+    tiltService.stopListening();
     SttService.instance.stop();
     TtsService.instance.stop();
-    voiceRecordService.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Transactions'),
-        centerTitle: true,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
+      appBar: AppBar(title: const Text('Transactions'), centerTitle: true),
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _capturingTap ? () { tapService.recordTap(); setState(() {}); } : null,
+        onLongPress: _capturingTap ? () { if (!_tapDoneCompleter.isCompleted) _tapDoneCompleter.complete(); } : null,
+        onDoubleTap: _capturingTilt ? () { if (!_tiltDoneCompleter.isCompleted) _tiltDoneCompleter.complete(); } : null,
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(25),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 10),
-              TextField(
-                controller: receiverController,
-                style: const TextStyle(fontSize: 22),
-                decoration: InputDecoration(
-                  prefixIcon: const Icon(Icons.person, size: 30),
-                  labelText: 'Receiver Name',
-                  labelStyle: const TextStyle(fontSize: 20),
-                  contentPadding:
-                      const EdgeInsets.symmetric(vertical: 22, horizontal: 20),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(15),
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 10),
+            _field(receiverController, 'Receiver Name', Icons.person),
+            const SizedBox(height: 25),
+            _field(amountController, 'Amount', Icons.currency_rupee, isNumber: true),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Transform.scale(
+                  scale: 1.4,
+                  child: Checkbox(
+                    value: confirmAmount,
+                    onChanged: (v) => setState(() => confirmAmount = v ?? false),
                   ),
                 ),
-              ),
-              const SizedBox(height: 25),
-              TextField(
-                controller: amountController,
-                keyboardType: TextInputType.number,
-                style: const TextStyle(fontSize: 22),
-                decoration: InputDecoration(
-                  prefixIcon: const Icon(Icons.currency_rupee, size: 30),
-                  labelText: 'Amount',
-                  labelStyle: const TextStyle(fontSize: 20),
-                  contentPadding:
-                      const EdgeInsets.symmetric(vertical: 22, horizontal: 20),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(15),
-                  ),
+                const SizedBox(width: 10),
+                const Text('I confirm the amount', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 25),
+            _field(pinController, 'Enter PIN', Icons.lock, isNumber: true, obscure: true),
+            const SizedBox(height: 15),
+            if (_capturingTap)
+              const Text('Tap anywhere on screen. Long press when done.', textAlign: TextAlign.center, style: TextStyle(fontSize: 18, color: Colors.deepPurple)),
+            if (_capturingTilt)
+              const Text('Tilt phone now. Double tap anywhere when done.', textAlign: TextAlign.center, style: TextStyle(fontSize: 18, color: Colors.orange)),
+            const SizedBox(height: 35),
+            SizedBox(
+              height: 65,
+              child: ElevatedButton(
+                onPressed: _submitTransaction,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
                 ),
+                child: const Text('SUBMIT TRANSACTION',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
               ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Transform.scale(
-                    scale: 1.4,
-                    child: Checkbox(
-                      value: confirmAmount,
-                      onChanged: (value) {
-                        setState(() {
-                          confirmAmount = value ?? false;
-                        });
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  const Text(
-                    'I confirm the amount',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 35),
-              SizedBox(
-                height: 65,
-                child: ElevatedButton(
-                  onPressed: submitTransaction,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor:
-                        _verificationPassed ? Colors.deepPurple : Colors.grey,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
-                    ),
-                  ),
-                  child: const Text(
-                    'SUBMIT TRANSACTION',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ),
-            ],
+            ),
+          ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _field(TextEditingController ctrl, String label, IconData icon,
+      {bool isNumber = false, bool obscure = false}) {
+    return TextField(
+      controller: ctrl,
+      obscureText: obscure,
+      keyboardType: isNumber ? TextInputType.number : TextInputType.text,
+      style: const TextStyle(fontSize: 22),
+      decoration: InputDecoration(
+        prefixIcon: Icon(icon, size: 30),
+        labelText: label,
+        labelStyle: const TextStyle(fontSize: 20),
+        contentPadding: const EdgeInsets.symmetric(vertical: 22, horizontal: 20),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
       ),
     );
   }

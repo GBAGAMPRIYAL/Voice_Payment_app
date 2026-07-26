@@ -36,6 +36,22 @@ class VoiceRecordService {
     }
   }
 
+  Future<bool> startPinRecording() async {
+    await init();
+    final status = await Permission.microphone.request();
+    if (!status.isGranted) return false;
+    final tempDir = await getTemporaryDirectory();
+    audioPath = '${tempDir.path}/pin_voice_sample.aac';
+    await recorder.startRecorder(toFile: audioPath);
+    return true;
+  }
+
+  Future<void> stopPinRecording() async {
+    if (recorder.isRecording) {
+      await recorder.stopRecorder();
+    }
+  }
+
   Future<void> togglePlayback({required void Function() onPlaybackFinished}) async {
     if (audioPath == null) return;
 

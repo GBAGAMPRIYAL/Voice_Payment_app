@@ -1,0 +1,49 @@
+name: voice_payment_app
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.3
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Audio recording / playback
+  flutter_sound: ^9.2.13
+  permission_handler: ^11.3.0
+  path_provider: ^2.1.2
+
+  # Backend API call for voice extraction
+  http: ^1.2.1
+
+  # Text to Speech / Speech to Text
+  flutter_tts: ^4.2.2
+  speech_to_text: ^7.0.0
+
+  # Device info
+  device_info_plus: ^11.2.0
+
+  # Sensors for head tilt
+  sensors_plus: ^6.0.1
+
+  # QR code
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.2.3
+
+  # Firebase
+  firebase_core: ^4.6.0
+  cloud_firestore: ^6.2.0
+  firebase_auth: ^6.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

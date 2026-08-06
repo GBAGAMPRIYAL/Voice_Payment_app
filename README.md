@@ -1,17 +1,23 @@
-# voice_payment_app
+1. 🚀 VoicePay
+   
+Overview
+*********
+VoicePay is a secure Flutter-based UPI payment application designed to enhance accessibility through voice authentication. The application integrates multiple verification mechanisms to ensure secure transactions while providing a seamless payment experience.
 
-A new Flutter project.
+Features
+********
+Voice-based authentication
+Secure UPI payment interface
+Firebase integration
+User authentication
+Device verification
+Accessibility-focused design
+Clean and responsive UI
 
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Tech Stack
+**********
+Flutter
+Dart
+Firebase Authentication
+Cloud Firestore
+Android Studio
